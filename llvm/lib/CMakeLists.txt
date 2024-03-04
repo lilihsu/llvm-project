@@ -42,6 +42,8 @@ if (LLVM_INCLUDE_TESTS)
 endif()
 add_subdirectory(WindowsManifest)
 
+add_subdirectory(MRRPass)
+
 set(LLVMCONFIGLIBRARYDEPENDENCIESINC "${LLVM_BINARY_DIR}/tools/llvm-config/LibraryDependencies.inc")
 
 # Special components which don't have any source attached but aggregate other

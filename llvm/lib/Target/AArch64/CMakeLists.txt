@@ -86,6 +86,8 @@ add_llvm_target(AArch64CodeGen
 
   DEPENDS
   intrinsics_gen
+    MRRPass
+  
 
   LINK_COMPONENTS
   AArch64Desc
@@ -106,6 +108,9 @@ add_llvm_target(AArch64CodeGen
 
   ADD_TO_COMPONENT
   AArch64
+
+    LINK_LIBS
+    MRRPass
 )
 
 add_subdirectory(AsmParser)

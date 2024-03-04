@@ -48,6 +48,8 @@
 #include <memory>
 #include <string>
 
+#include "llvm/MRRPass/MRRPass.h"
+
 using namespace llvm;
 
 static cl::opt<bool> EnableCCMP("aarch64-enable-ccmp",
@@ -519,6 +521,7 @@ std::unique_ptr<CSEConfigBase> AArch64PassConfig::getCSEConfig() const {
 void AArch64PassConfig::addIRPasses() {
   // Always expand atomic operations, we don't deal with atomicrmw or cmpxchg
   // ourselves.
+  addPass(MRR::createMrrPass());
   addPass(createAtomicExpandPass());
 
   // Expand any SVE vector library calls that we can't code generate directly.
