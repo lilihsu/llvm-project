@@ -23,6 +23,8 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Type.h"
+#include "llvm/IR/DerivedTypes.h"
 
 #include "llvm/Analysis/PostDominators.h"
 
@@ -42,7 +44,26 @@ namespace llvm {
 class MemOpTransformation {
 public:
     MemOpTransformation(Function &F);
-    bool isModuleTransformed();
+    bool isFuncTransformed();
+    bool isFunctionToSkip();
+    bool isRootFunction();
+    void collectGlobalVars();
+    bool isInstLoadGvars(LoadInst *load);
+    bool isInstStoreGvars(StoreInst *store);
+    void collectInstsUseGlobal();
+    void performTransformation();
+    void insertGvarRecordInst();
+    void insertRstoreFunc();
+
+private:
+    std::set<GlobalVariable *> globalVarSet;
+    std::set<LoadInst *> instLoadGvars;
+    std::set<StoreInst *> instStoreGvars;
+    Module *parentModule;
+    Function *funcToModified;
+    bool isTransformed = false;
+    bool isSkiped = false;
+    bool isRootFunc = false;
 
 };
 
