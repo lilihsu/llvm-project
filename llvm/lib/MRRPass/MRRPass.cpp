@@ -48,6 +48,7 @@ const StringRef recover = "recover";
 const StringRef restore = "restore";
 const StringRef new_global_data = "new_global_data";
 const StringRef set_global_data = "set_global_data";
+const StringRef get_global_data = "get_global_data";
 
 MemOpTransformation::MemOpTransformation(Function &F) {
     if (funcs_to_instrument.find(F.getName()) == funcs_to_instrument.end()) {
@@ -58,12 +59,13 @@ MemOpTransformation::MemOpTransformation(Function &F) {
 
     parentModule = F.getParent(); 
     funcToModified = &F;
-
+    collectGlobalVars();
     if (F.getName() == syscall_root) {
         isRootFunc = true;
         errs() << "[Find root function]:" << F.getName() << "\n";
-        collectGlobalVars();
     }
+    collectInstsUseGlobal();
+    //collectKernelMemCallee();
     errs() <<F.getName() << "\n";
 }
 
@@ -95,6 +97,7 @@ void MemOpTransformation::collectGlobalVars() {
 bool MemOpTransformation::isInstLoadGvars(LoadInst *load) {
     if (GlobalVariable * gvar = dyn_cast<GlobalVariable>(load->getPointerOperand())) {
         if (globalVarSet.find(gvar) != globalVarSet.end()) {
+            errs() << *load << "\n";
             return true;
         }
     }
@@ -105,40 +108,70 @@ bool MemOpTransformation::isInstLoadGvars(LoadInst *load) {
 bool MemOpTransformation::isInstStoreGvars(StoreInst *store) {
     if (GlobalVariable * gvar = dyn_cast<GlobalVariable>(store->getPointerOperand())) {
         if (globalVarSet.find(gvar) != globalVarSet.end()) {
+            errs() << *store << "\n";
             return true;
         }
     }
-    
+
     return false;
 }
 
 void MemOpTransformation::collectInstsUseGlobal() {
+    errs() << "[Analysis] collect inst using gVars" << "\n";
     for (auto it = inst_begin(funcToModified); it != inst_end(funcToModified); ++it) {
         Instruction *inst = &*it;
 
         if (LoadInst *load = dyn_cast<LoadInst> (inst)) {
             if (isInstLoadGvars(load))
-                instLoadGvars.insert(load);
+                instLoadGvars.insert(inst);
         } else if (StoreInst *store = dyn_cast<StoreInst>(inst)) {
             if (isInstStoreGvars(store))
-                instStoreGvars.insert(store);
+                instStoreGvars.insert(inst);
         }
     }
- 
+    
+}
+
+void MemOpTransformation::collectKernelMemCallee() {
+    errs() << "[Analysis] collect kernel mem operation callee" << "\n";
+
+    for (auto it = inst_begin(funcToModified); it != inst_end(funcToModified); ++it) {
+        Instruction *inst = &*it;
+        
+        if (CallInst *callee = dyn_cast<CallInst>(inst)) {
+            errs() << "call inst:" << *inst << "\n";
+        }
+
+    }
+
 }
 
 void MemOpTransformation::performTransformation() {
+    errs() << "[Transformation]: start to perform transformation";
     if (isRootFunction()) {
         insertGvarRecordInst();
         insertRstoreFunc();
+        isTransformed = true;
     }
+
+    if (!instLoadGvars.empty()) {
+        replaceLoadGvarByGetter();
+        isTransformed = true;
+    }
+
+    if (!instStoreGvars.empty()) {
+        replaceStoreGvarBySetter();
+        isTransformed = true;
+    }
+
+    errs() << "[Transformation]: end of transformation";
 }
+
 
 void MemOpTransformation::insertGvarRecordInst() {
     errs() << "[Perform insertGvarRecordInst]" << "\n";
     BasicBlock *bb = &(funcToModified->getEntryBlock());
-    Instruction *i = bb->getFirstNonPHI();
-    
+    Instruction *i = bb->getFirstNonPHI(); 
     IRBuilder<> irBuilder(i);
     std::set<GlobalVariable *>::iterator it;
     FunctionType *turn_on_compart_flag_ft = FunctionType::get(irBuilder.getVoidTy(),
@@ -169,7 +202,7 @@ void MemOpTransformation::insertGvarRecordInst() {
                             val});
         // B.CreateCall();
     }
-    isTransformed = true;
+    
     errs() << "[Finish insert record inst in front of function]" << "\n";
 }
 
@@ -192,6 +225,65 @@ void MemOpTransformation::insertRstoreFunc() {
 
 }
 
+void MemOpTransformation::replaceLoadGvarByGetter() {
+    errs() << "[Perform replaceLoadGvarByGetter]";
+    std::set<Instruction *>::iterator it;
+                        
+    errs() << "[Start to modify load inst]" << "\n";
+    for (it = instLoadGvars.begin(); it != instLoadGvars.end(); it++) {
+        Instruction *inst = *it;
+        errs() << *inst << "\n";
+        LoadInst *load = dyn_cast<LoadInst> (inst);
+        IRBuilder <> irBuilder(inst);
+
+        FunctionType *get_global_data_ty = FunctionType::get(irBuilder.getInt64Ty(),
+                                            {irBuilder.getInt8PtrTy(),
+                                            irBuilder.getInt64Ty()},
+                                            false);
+        FunctionCallee get_global_data_callee = parentModule->getOrInsertFunction(get_global_data,
+                                                                                    get_global_data_ty);
+        Value *gVar_addr = irBuilder.CreateBitCast(load->getPointerOperand(), irBuilder.getInt8PtrTy());
+        CallInst * callInst = irBuilder.CreateCall(get_global_data_callee,
+                             {gVar_addr});
+        inst->replaceAllUsesWith(callInst);
+        inst->eraseFromParent();
+    }
+}
+
+void MemOpTransformation::replaceStoreGvarBySetter() {
+    errs() << "[Perform replaceStoreGvarBySetter]";
+    std::set<Instruction *>::iterator it;
+
+    for (it = instStoreGvars.begin(); it != instStoreGvars.end(); it++) {
+        Instruction *inst = *it;
+        errs() << "[inst]:"<< *inst<< "\n";
+        StoreInst *store = dyn_cast<StoreInst> (inst);
+        IRBuilder <> irBuilder(inst);
+        FunctionType *set_global_data_ty = FunctionType::get(irBuilder.getVoidTy(),
+                                                            {irBuilder.getInt8PtrTy(),
+                                                            irBuilder.getInt64Ty(),
+                                                            },
+                                                            false);
+        errs() << "[Debug]: generate function type successfully" << "\n";
+        FunctionCallee set_global_data_callee = parentModule->getOrInsertFunction(set_global_data,
+                                                                                set_global_data_ty);
+        errs() << "[Debug]: gnerate function callee successfully" << "\n";
+        Value *store_var = store->getPrevNonDebugInstruction();
+        Value *gVar_addr = irBuilder.CreateBitCast(store->getPointerOperand(), irBuilder.getInt8PtrTy());
+        
+        errs() << "[Debug] gVar_addr: " << *gVar_addr << "store_var: " << *store_var << "\n";
+        CallInst * callInst = irBuilder.CreateCall(set_global_data_callee,
+                                                    {gVar_addr,
+                                                    store_var});
+        errs() << "[Debug] created CallInst:" << *callInst << "\n";
+        //inst->removeFromParent();
+        inst->replaceAllUsesWith(callInst);
+        inst->eraseFromParent();
+    }
+
+    errs() << "[Transformation]: finish replace store gVar with setter";
+}
+
 namespace {
     struct MRRPass : public FunctionPass {
         static char ID;
@@ -202,6 +294,7 @@ namespace {
             if (!transformation.isFunctionToSkip())
                 transformation.performTransformation();
             // errs() << getPassName() << "\n";
+            //errs() << "[Function Pass]: finish run on function pass" << "\n";
             return transformation.isFuncTransformed();
         } ;
     };

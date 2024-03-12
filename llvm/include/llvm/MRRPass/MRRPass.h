@@ -44,6 +44,7 @@ namespace llvm {
 class MemOpTransformation {
 public:
     MemOpTransformation(Function &F);
+    // Analysis phase
     bool isFuncTransformed();
     bool isFunctionToSkip();
     bool isRootFunction();
@@ -51,14 +52,19 @@ public:
     bool isInstLoadGvars(LoadInst *load);
     bool isInstStoreGvars(StoreInst *store);
     void collectInstsUseGlobal();
+    void collectKernelMemCallee();
+    // transformation phase
     void performTransformation();
     void insertGvarRecordInst();
     void insertRstoreFunc();
+    void replaceLoadGvarByGetter();
+    void replaceStoreGvarBySetter();
 
 private:
     std::set<GlobalVariable *> globalVarSet;
-    std::set<LoadInst *> instLoadGvars;
-    std::set<StoreInst *> instStoreGvars;
+    std::set<Instruction *> instLoadGvars;
+    std::set<Instruction *> instStoreGvars;
+    std::set<CallInst> kernelMemOpCallees;
     Module *parentModule;
     Function *funcToModified;
     bool isTransformed = false;
