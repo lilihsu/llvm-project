@@ -52,6 +52,7 @@ public:
     bool isInstLoadGvars(LoadInst *load);
     bool isInstStoreGvars(StoreInst *store);
     void collectInstsUseGlobal();
+    void collectRetInsts();
     void collectKernelMemCallee();
     // transformation phase
     void performTransformation();
@@ -59,12 +60,15 @@ public:
     void insertRstoreFunc();
     void replaceLoadGvarByGetter();
     void replaceStoreGvarBySetter();
+    void insertMemMonitor();
 
 private:
     std::set<GlobalVariable *> globalVarSet;
     std::set<Instruction *> instLoadGvars;
     std::set<Instruction *> instStoreGvars;
-    std::set<CallInst> kernelMemOpCallees;
+    std::set<Instruction *> retInsts;
+    std::set<Instruction *> memAllocCallees;
+    std::set<Instruction *> memFreeCallees;
     Module *parentModule;
     Function *funcToModified;
     bool isTransformed = false;

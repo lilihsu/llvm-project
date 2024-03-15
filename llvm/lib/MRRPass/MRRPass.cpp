@@ -29,6 +29,7 @@ const std::set<StringRef> kernel_allocation_funcs = {
     "nla_memdup",
     "kzalloc_node",
     "fib_rules_register",
+    "kmem_cache_alloc",
 };
 
 const std::set<StringRef> kernel_free_funcs = {
@@ -49,6 +50,11 @@ const StringRef restore = "restore";
 const StringRef new_global_data = "new_global_data";
 const StringRef set_global_data = "set_global_data";
 const StringRef get_global_data = "get_global_data";
+const StringRef set_mem_obj = "set_mem_obj";
+const StringRef invalid_mem_obj = "invalid_mem_obj";
+const StringRef new_field = "new_field";
+const StringRef set_field = "set_field";
+const StringRef get_field = "get_field";
 
 MemOpTransformation::MemOpTransformation(Function &F) {
     if (funcs_to_instrument.find(F.getName()) == funcs_to_instrument.end()) {
@@ -65,7 +71,8 @@ MemOpTransformation::MemOpTransformation(Function &F) {
         errs() << "[Find root function]:" << F.getName() << "\n";
     }
     collectInstsUseGlobal();
-    //collectKernelMemCallee();
+    collectRetInsts();
+    collectKernelMemCallee();
     errs() <<F.getName() << "\n";
 }
 
@@ -132,6 +139,17 @@ void MemOpTransformation::collectInstsUseGlobal() {
     
 }
 
+void MemOpTransformation::collectRetInsts(){
+    errs() << "[Analysis] collect ret inst" << "\n";
+    for (auto it = inst_begin(funcToModified); it != inst_end(funcToModified); ++it) {
+        Instruction *inst = &*it;
+
+        if (ReturnInst *ret = dyn_cast<ReturnInst> (inst)) {
+            retInsts.insert(inst);
+        }
+    }
+}
+
 void MemOpTransformation::collectKernelMemCallee() {
     errs() << "[Analysis] collect kernel mem operation callee" << "\n";
 
@@ -139,7 +157,18 @@ void MemOpTransformation::collectKernelMemCallee() {
         Instruction *inst = &*it;
         
         if (CallInst *callee = dyn_cast<CallInst>(inst)) {
-            errs() << "call inst:" << *inst << "\n";
+            Function *calledFunc = callee->getCalledFunction();
+            if (!calledFunc)
+                continue;
+            errs() << "call inst:" << calledFunc->getName() << "\n";
+            StringRef funcName = calledFunc->getName();
+            if (kernel_allocation_funcs.find(funcName) != kernel_allocation_funcs.end()) {
+                memAllocCallees.insert(inst);
+            }
+
+            if (kernel_free_funcs.find(funcName) != kernel_free_funcs.end()) {
+                memFreeCallees.insert(inst);
+            }
         }
 
     }
@@ -161,6 +190,11 @@ void MemOpTransformation::performTransformation() {
 
     if (!instStoreGvars.empty()) {
         replaceStoreGvarBySetter();
+        isTransformed = true;
+    }
+
+    if (!memAllocCallees.empty() && !memFreeCallees.empty()) {
+        insertMemMonitor();
         isTransformed = true;
     }
 
@@ -208,21 +242,24 @@ void MemOpTransformation::insertGvarRecordInst() {
 
 void MemOpTransformation::insertRstoreFunc() {
     errs() << "[Perform insertRestoreFunc]" << "\n";
+    std::set<Instruction *>::iterator it;
 
-    BasicBlock *bb = &(funcToModified->back());
-    Instruction *i = bb->getFirstNonPHI();
-    
-    IRBuilder<> irBuilder(i);
-    FunctionType *restoreFt = FunctionType::get(irBuilder.getVoidTy(),
-                                                {irBuilder.getVoidTy()},
-                                                false);
-    FunctionCallee restore_fuc = parentModule->getOrInsertFunction(restore,
-                                                                    restoreFt);
+    for (it = retInsts.begin(); it != retInsts.end(); ++it) {
+        Instruction *i = *it;
+        IRBuilder<> irBuilder(i);
+        FunctionType *restoreFt = FunctionType::get(irBuilder.getVoidTy(),
+                                                    {irBuilder.getVoidTy()},
+                                                    false);
+        FunctionCallee restore_fuc = parentModule->getOrInsertFunction(restore,
+                                                                        restoreFt);
 
-    assert(restore_fuc && "can't get restore function");
-    irBuilder.CreateCall(restore_fuc,
-                        {});
+        assert(restore_fuc && "can't get restore function");
+        irBuilder.CreateCall(restore_fuc,
+                            {});
 
+    }
+    // BasicBlock *bb = &(funcToModified->back());
+    // Instruction *i = bb->getFirstNonPHI();
 }
 
 void MemOpTransformation::replaceLoadGvarByGetter() {
@@ -243,7 +280,7 @@ void MemOpTransformation::replaceLoadGvarByGetter() {
         FunctionCallee get_global_data_callee = parentModule->getOrInsertFunction(get_global_data,
                                                                                     get_global_data_ty);
         Value *gVar_addr = irBuilder.CreateBitCast(load->getPointerOperand(), irBuilder.getInt8PtrTy());
-        CallInst * callInst = irBuilder.CreateCall(get_global_data_callee,
+        CallInst *callInst = irBuilder.CreateCall(get_global_data_callee,
                              {gVar_addr});
         inst->replaceAllUsesWith(callInst);
         inst->eraseFromParent();
@@ -282,6 +319,43 @@ void MemOpTransformation::replaceStoreGvarBySetter() {
     }
 
     errs() << "[Transformation]: finish replace store gVar with setter";
+}
+
+void MemOpTransformation::insertMemMonitor() {
+    errs() << "[Transformation]: insert mem alloc free record function behind instruction" << "\n";
+    std::set<Instruction *>::iterator it;
+    Instruction *inst;
+
+    for (it = memAllocCallees.begin(); it != memAllocCallees.end(); it++) {
+        inst = *it;
+        IRBuilder<> irBuilder(inst->getNextNode());
+        FunctionType *set_mem_obj_ty = FunctionType::get(irBuilder.getInt32Ty(),
+                                            {irBuilder.getInt8PtrTy(),
+                                            irBuilder.getInt1Ty()},
+                                            false);
+        Value *mem_addr = dyn_cast<Value>(inst);
+        FunctionCallee set_mem_obj_func = parentModule->getOrInsertFunction(set_mem_obj,
+                                                                            set_mem_obj_ty);
+        irBuilder.CreateCall(set_mem_obj_func,
+                            {mem_addr,
+                            irBuilder.getFalse()});
+        
+    }
+
+    for (it =memFreeCallees.begin(); it != memFreeCallees.end(); it++) {
+        inst = *it;
+        
+        IRBuilder<> irBuilder(inst->getNextNode());
+        FunctionType *invalid_mem_obj_ty = FunctionType::get(irBuilder.getInt32Ty(),
+                                                            {irBuilder.getInt8PtrTy()},
+                                                            false);
+        FunctionCallee invalid_mem_obj_func = parentModule->getOrInsertFunction(invalid_mem_obj,
+                                                                            invalid_mem_obj_ty);
+        CallInst *callInst = dyn_cast<CallInst>(inst);
+        Value *mem_addr = callInst->getArgOperand(0);
+        irBuilder.CreateCall(invalid_mem_obj_func,
+                            {mem_addr});
+    }
 }
 
 namespace {
