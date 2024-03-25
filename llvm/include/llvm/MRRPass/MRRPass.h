@@ -8,6 +8,8 @@
 
 #include <set>
 #include <vector>
+#include <stack>
+#include <map>
 
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
@@ -54,6 +56,10 @@ public:
     void collectInstsUseGlobal();
     void collectRetInsts();
     void collectKernelMemCallee();
+
+    void analyzeHeapData();
+    void findPtrArgUsedFieldInst();
+    std::set<Instruction *> findPtrUseChain(Value *val);
     // transformation phase
     void performTransformation();
     void insertGvarRecordInst();
@@ -62,6 +68,8 @@ public:
     void replaceStoreGvarBySetter();
     void insertMemMonitor();
 
+    void recordUsedField();
+
 private:
     std::set<GlobalVariable *> globalVarSet;
     std::set<Instruction *> instLoadGvars;
@@ -69,6 +77,7 @@ private:
     std::set<Instruction *> retInsts;
     std::set<Instruction *> memAllocCallees;
     std::set<Instruction *> memFreeCallees;
+    std::map<Value *, std::set<Instruction *>> argInstMap;
     Module *parentModule;
     Function *funcToModified;
     bool isTransformed = false;

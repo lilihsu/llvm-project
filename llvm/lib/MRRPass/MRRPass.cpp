@@ -73,6 +73,7 @@ MemOpTransformation::MemOpTransformation(Function &F) {
     collectInstsUseGlobal();
     collectRetInsts();
     collectKernelMemCallee();
+    analyzeHeapData();
     errs() <<F.getName() << "\n";
 }
 
@@ -173,6 +174,61 @@ void MemOpTransformation::collectKernelMemCallee() {
 
     }
 
+}
+
+void MemOpTransformation::analyzeHeapData() {
+    findPtrArgUsedFieldInst();
+}
+
+void MemOpTransformation::findPtrArgUsedFieldInst() {
+    Function *f = funcToModified;
+    std::set<Value *> ptrArgs;
+
+    // collect args
+    for (auto it = f->arg_begin(); it != f->arg_end(); it ++) {
+        // errs() << "[Function Arguments]" << *it << "\n";
+        Value *val = &*it;
+        if (val->getType()->isPointerTy()) {
+            ptrArgs.insert(val);
+        }
+    }
+
+    // analysis arg usage
+    for (auto it = ptrArgs.begin(); it != ptrArgs.end(); it ++) {
+        Value *val = *it;
+        errs() << "[Function Arguments to analyze]:" << *val << "\n";
+        argInstMap[val] = findPtrUseChain(val);
+    }
+}
+
+std::set<Instruction *> MemOpTransformation::findPtrUseChain(Value *val) {
+    std::stack<Instruction *> work_list;
+    std::set<Instruction *> instSet;
+    for (User *U : val->users()) {
+        if (Instruction *inst = dyn_cast<Instruction>(U)) {
+            errs() << "[Inst used value directly]:" << *inst << "\n";
+            work_list.push(inst);
+        } 
+    }
+
+    while (!work_list.empty()) {
+        Instruction *inst = work_list.top();
+        errs() << "[Inst arg used]:" << *inst << "\n";
+        work_list.pop();
+        for (User *U : inst->users()) {
+            if (Instruction *inst = dyn_cast<Instruction>(U)) {
+                work_list.push(inst);
+            }
+        }
+
+        if (StoreInst *store = dyn_cast<StoreInst>(inst)) {
+            instSet.insert(inst);
+        } else if(LoadInst *load = dyn_cast<LoadInst>(inst)) {
+            instSet.insert(inst);
+        }
+
+    }
+    
 }
 
 void MemOpTransformation::performTransformation() {
@@ -377,6 +433,5 @@ namespace {
 Pass *llvm::MRR::createMrrPass() {
     return new MRRPass();
 }
-
 
 char MRRPass::ID = 0;
